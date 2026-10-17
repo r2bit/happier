@@ -1,6 +1,8 @@
 import type {
   AgentApp,
   ClientApp,
+  CreateElicitationRequest,
+  CreateElicitationResponse,
   ParamsParser,
   PromptResponse,
   ReadTextFileRequest,
@@ -25,6 +27,9 @@ export type AcpClientConnectionHandlers = Readonly<{
   sessionUpdate: (params: SessionNotification) => void | Promise<void>;
   readTextFile?: (params: ReadTextFileRequest) => ReadTextFileResponse | Promise<ReadTextFileResponse>;
   writeTextFile?: (params: WriteTextFileRequest) => WriteTextFileResponse | Promise<WriteTextFileResponse>;
+  createElicitation?: (
+    params: CreateElicitationRequest,
+  ) => CreateElicitationResponse | Promise<CreateElicitationResponse>;
 }>;
 
 export type AcpExtensionHandlerContext = Readonly<{

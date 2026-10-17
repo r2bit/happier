@@ -128,6 +128,8 @@ import {
   classifyAcpSessionUpdateDisposition,
 } from './connection/sdkContractDisposition';
 import type { PermissionResult } from '@/agent/permissions/permissionResult';
+import type { ElicitationDecision, ElicitationForm } from '@/agent/elicitation/types';
+import { resolveAcpElicitation } from './elicitation/resolveAcpElicitation';
 import type { PermissionMode } from '@/api/types';
 import { AcpPlanProjection, type NormalizedAcpPlanSnapshot } from './plans';
 
@@ -356,6 +358,15 @@ export interface AcpPermissionHandler {
   ): Promise<PermissionResult>;
 
   /**
+   * Answer an ACP `elicitation/create` form (for example a plan-approval select).
+   *
+   * Return `null` when no prompt can be shown. Implementations must never
+   * auto-accept: `accept` is what lets the agent proceed (leaving plan mode for
+   * a plan approval), so it may only come from an explicit user choice.
+   */
+  handleElicitation?(form: ElicitationForm): Promise<ElicitationDecision | null>;
+
+  /**
    * Finalize one provider-owned prompt that can no longer accept a response.
    * Neighboring permission requests remain pending.
    */
@@ -540,6 +551,12 @@ export function buildInitializeRequest(params: {
   clientName: string;
   clientVersion: string;
   planUpdates?: boolean;
+  /**
+   * Advertise `elicitation.form` only when the backend can actually answer an
+   * elicitation. Advertising it without a handler makes agents send requests
+   * this client would have to fail.
+   */
+  elicitationForm?: boolean;
   initializeMeta?: Record<string, unknown>;
   initializeClientCapabilitiesMeta?: Record<string, unknown>;
 }): InitializeRequest {
@@ -558,6 +575,7 @@ export function buildInitializeRequest(params: {
     clientCapabilities: {
       ...(initializeClientCapabilitiesMeta ? { _meta: initializeClientCapabilitiesMeta } : {}),
       ...(params.planUpdates ? { plan: {} } : {}),
+      ...(params.elicitationForm ? { elicitation: { form: {} } } : {}),
       fs: {
         readTextFile: fsEnabled,
         writeTextFile: fsEnabled,
@@ -729,6 +747,9 @@ export interface AcpBackendOptions {
 
   /** Optional permission handler for tool approval */
   permissionHandler?: AcpPermissionHandler;
+
+  /** Bound for an unanswered ACP elicitation. Tests override it; agents pass no timeout. */
+  elicitationTimeoutMs?: number;
 
   /** Transport handler for agent-specific behavior (timeouts, filtering, etc.) */
   transportHandler?: TransportHandler;
@@ -1428,6 +1449,18 @@ export class AcpBackend implements AgentBackend {
       sessionUpdate: async (params: SessionNotification) => {
         await this.handleSessionUpdate(params);
       },
+      createElicitation: async (params) => {
+        const permissionHandler = this.options.permissionHandler;
+        const handleElicitation = permissionHandler?.handleElicitation;
+        return await resolveAcpElicitation({
+          request: params,
+          handler: permissionHandler && handleElicitation
+            ? handleElicitation.bind(permissionHandler)
+            : null,
+          timeoutMs: this.options.elicitationTimeoutMs,
+          isActive: () => !this.disposed && this.acpSessionId === params.sessionId,
+        });
+      },
       requestPermission: async (params: RequestPermissionRequest): Promise<RequestPermissionResponse> => {
         const extendedParams = params as ExtendedRequestPermissionRequest;
         const toolCall = extendedParams.toolCall;
@@ -1656,6 +1689,7 @@ export class AcpBackend implements AgentBackend {
       clientName: 'happier-cli',
       clientVersion: packageJson.version,
       planUpdates: this.planStatePublisher !== null,
+      elicitationForm: typeof this.options.permissionHandler?.handleElicitation === 'function',
       initializeMeta: this.options.initializeMeta,
       initializeClientCapabilitiesMeta: this.options.initializeClientCapabilitiesMeta,
     });

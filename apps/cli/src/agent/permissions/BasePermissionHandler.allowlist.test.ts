@@ -2,6 +2,7 @@ import { describe, it, expect, vi } from 'vitest';
 import { BasePermissionHandler, type PermissionResult } from './BasePermissionHandler';
 import { SESSION_RPC_METHODS } from '@happier-dev/protocol/rpc';
 import { PUBLIC_RPC_HANDLER_ERROR_CODES } from '@happier-dev/protocol/rpcErrors';
+import type { ApiSessionClient } from '@/api/session/sessionClient';
 
 class FakeRpcHandlerManager {
   handlers = new Map<string, (payload: any) => any>();
@@ -377,6 +378,58 @@ describe('BasePermissionHandler allowlist', () => {
     const result = await promise;
     expect(result.decision).toBe('approved');
     expect(result.answers).toEqual({ q1: ['a'] });
+  });
+
+  it('answers an ACP elicitation from the structured-question channel', async () => {
+    const session = new FakeSession();
+    const handler = new TestPermissionHandler(session as unknown as ApiSessionClient);
+
+    const pending = handler.handleElicitation({
+      sessionId: 'session-1',
+      message: 'Approve the plan?',
+      propertyName: 'value',
+      question: {
+        question: 'Approve and execute',
+        options: [{ label: 'Approve and execute' }, { label: 'Refine plan' }],
+        multiSelect: false,
+      },
+    });
+    const requestId = Object.keys(session.agentState.requests)[0];
+    expect(requestId).toMatch(/^acp-elicitation:/);
+
+    const rpc = session.rpcHandlerManager.handlers.get('permission');
+    await rpc!({
+      id: requestId,
+      approved: true,
+      answers: { 'Approve and execute': 'Approve and execute' },
+    });
+
+    await expect(pending).resolves.toEqual({
+      action: 'accept',
+      value: 'Approve and execute',
+    });
+  });
+
+  it('declines an ACP elicitation the user refuses', async () => {
+    const session = new FakeSession();
+    const handler = new TestPermissionHandler(session as unknown as ApiSessionClient);
+
+    const pending = handler.handleElicitation({
+      sessionId: 'session-1',
+      message: 'Approve the plan?',
+      propertyName: 'value',
+      question: {
+        question: 'Approve and execute',
+        options: [{ label: 'Approve and execute' }, { label: 'Refine plan' }],
+        multiSelect: false,
+      },
+    });
+    const requestId = Object.keys(session.agentState.requests)[0];
+
+    const rpc = session.rpcHandlerManager.handlers.get('permission');
+    await rpc!({ id: requestId, approved: false, decision: 'denied' });
+
+    await expect(pending).resolves.toEqual({ action: 'decline' });
   });
 
   it('accepts structured answers only for a request owned by this handler', async () => {

@@ -7,7 +7,10 @@
  * @module BasePermissionHandler
  */
 
+import { randomUUID } from 'node:crypto';
+
 import { logger } from "@/ui/logger";
+import type { ElicitationDecision, ElicitationForm } from '@/agent/elicitation/types';
 import type { ApiSessionClient } from "@/api/session/sessionClient";
 import { AgentState } from "@/api/types";
 import { updateAgentStateBestEffort as updateAgentStateBestEffortShared } from "@/api/session/sessionWritesBestEffort";
@@ -503,6 +506,35 @@ export abstract class BasePermissionHandler {
 
     protected isAllowedForSession(toolName: string, input: unknown): boolean {
         return isToolAllowedForSession(this.allowedToolIdentifiers, toolName, input);
+    }
+
+    /**
+     * Answer an ACP elicitation through the structured-question channel.
+     *
+     * This deliberately has no permission-mode bypass: `accept` is what tells the
+     * agent it may proceed (for a plan approval, leaving read-only mode), so it
+     * must come from an explicit user choice.
+     */
+    async handleElicitation(form: ElicitationForm): Promise<ElicitationDecision | null> {
+        const requestId = `acp-elicitation:${randomUUID()}`;
+        try {
+            const result = await this.requestPermissionDecision(requestId, 'AskUserQuestion', {
+                questions: [form.question],
+            });
+            if (result.decision === 'abort') return { action: 'cancel' };
+            if (result.decision !== 'approved') return { action: 'decline' };
+            const answer = result.answers?.[form.question.question]?.[0];
+            if (!answer || !form.question.options.some((option) => option.label === answer)) {
+                return { action: 'cancel' };
+            }
+            return { action: 'accept', value: answer };
+        } catch (error) {
+            logger.debug(`${this.getLogPrefix()} ACP elicitation prompt failed`, {
+                sessionId: form.sessionId,
+                errorType: error instanceof Error ? error.name : typeof error,
+            });
+            return { action: 'cancel' };
+        }
     }
 
     protected isPermissionRequestClaimed(requestId: string): boolean {
